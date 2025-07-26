@@ -4,28 +4,52 @@
  * This generated file contains a sample Java application project to get you started.
  * For more details on building Java & JVM projects, please refer to https://docs.gradle.org/8.14.3/userguide/building_java_projects.html in the Gradle documentation.
  */
+/*
+ * Optimized build.gradle for price_eng
+ * - Uses Java 24 (as per your setup)
+ * - Reads SonarCloud token from environment or gradle.properties
+ * - Clean structure and comments
+ */
 
 plugins {
-    // Apply the application plugin to add support for building a CLI application in Java.
+    // Application plugin for CLI applications
     id 'application'
+
+    // SonarQube plugin for code quality analysis
+    id "org.sonarqube" version "6.2.0.5505"
+}
+
+// SonarQube configuration
+sonar {
+    properties {
+        property "sonar.projectKey", "V1ibh1vsingh_grt_odoo"
+        property "sonar.organization", "v1ibh1vsingh"
+        property "sonar.host.url", "https://sonarcloud.io"
+
+        // Automatically pick token from environment or gradle.properties
+        def sonarToken = System.getenv("SONAR_TOKEN") ?: findProperty("sonar.token")
+        if (sonarToken) {
+            property "sonar.token", sonarToken
+        }
+    }
 }
 
 repositories {
-    // Use Maven Central for resolving dependencies.
+    // Use Maven Central for dependencies
     mavenCentral()
 }
 
 dependencies {
-    // Use JUnit Jupiter for testing.
+    // JUnit Jupiter for testing
     testImplementation libs.junit.jupiter
 
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
-    // This dependency is used by the application.
+    // Main application dependency
     implementation libs.guava
 }
 
-// Apply a specific Java toolchain to ease working on different environments.
+// Apply Java toolchain (Java 24)
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(24)
@@ -33,11 +57,11 @@ java {
 }
 
 application {
-    // Define the main class for the application.
+    // Define the main class for the application
     mainClass = 'org.example.App'
 }
 
 tasks.named('test') {
-    // Use JUnit Platform for unit tests.
+    // Use JUnit Platform for unit tests
     useJUnitPlatform()
 }
