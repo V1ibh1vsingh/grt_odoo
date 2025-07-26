@@ -67,7 +67,7 @@ public class DynamicPricingService {
 
     /** Immutable user segment enumeration. Extend as needed. */
     public enum UserSegment {
-        GUEST, MEMBER, SILVER, GOLD, PLATINUM, CORPORATE
+        GUEST, MEMBER, SILVER, GOLD, PLATINUM, CORPORATE, LOYAL
     }
 
     /** Context fed to the pricing engine – the whole world it needs to know. */
@@ -289,6 +289,31 @@ public class DynamicPricingService {
         }
     }
 
+    /** High demand surge pricing - applies when demand index is very high regardless of occupancy. */
+    public static final class HighDemandSurgeRule implements PricingRule {
+        private final double demandThreshold;
+        private final double multiplier;
+
+        public HighDemandSurgeRule(double demandThreshold, double multiplier) {
+            this.demandThreshold = demandThreshold;
+            this.multiplier = multiplier;
+        }
+
+        @Override public String name() { return "HighDemandSurge"; }
+        @Override public int priority() { return 95; } // Just below main surge pricing
+        @Override public boolean exclusive() { return false; }
+
+        @Override public boolean applies(PricingContext ctx) {
+            return ctx.demandIndex >= demandThreshold;
+        }
+
+        @Override public double apply(PricingContext ctx, double currentPrice, List<String> audit, Map<String,Object> metaOut) {
+            metaOut.put("demandIndex", ctx.demandIndex);
+            metaOut.put("multiplier", multiplier);
+            return currentPrice * multiplier;
+        }
+    }
+
     /** Early-bird discount if booking far in advance. */
     public static final class EarlyBirdDiscountRule implements PricingRule {
         private final long minDays;
@@ -404,7 +429,7 @@ public class DynamicPricingService {
         @Override public String name() { return "HeuristicForecaster"; }
 
         @Override public double forecast(DemandContext ctx) {
-            // Naive: demand grows with occupancy and closeness to check-in
+            // Enhanced: demand grows with occupancy and closeness to check-in
             double occFactor = clamp(ctx.currentOccupancy, 0, 1);
             double timeFactor = 1.0 - clamp(ctx.bookingWindowDays / 365.0, 0, 1);
             double competitorFactor = 0.5;
@@ -412,7 +437,15 @@ public class DynamicPricingService {
                 // if we are cheaper than competitor, demand increases a bit
                 competitorFactor = 0.5 + 0.2;
             }
-            double d = 0.5 * occFactor + 0.4 * timeFactor + 0.1 * competitorFactor;
+            
+            // More aggressive demand calculation for higher occupancy scenarios
+            double d = 0.4 * occFactor + 0.4 * timeFactor + 0.2 * competitorFactor;
+            
+            // Boost demand for high occupancy scenarios
+            if (occFactor > 0.7) {
+                d += 0.2; // Additional 20% boost for high occupancy
+            }
+            
             return clamp(d, 0, 1);
         }
     }
@@ -488,20 +521,22 @@ public class DynamicPricingService {
         feeds.baseRates.put(new Key2("H1", "DLX"), 5000.0);
         feeds.baseRates.put(new Key2("H1", "STD"), 3000.0);
 
-        // Default occupancy
-        feeds.occupancy.put("H1", 0.75);
+        // Default occupancy - set higher to trigger surge pricing more easily
+        feeds.occupancy.put("H1", 0.82);
 
         // Build default ruleset
         List<PricingRule> rules = List.of(
                 new CompetitorAlignRule(0.03, 0.95),
-                new SurgePricingRule(0.85, 0.85, 1.15),
+                new SurgePricingRule(0.80, 0.75, 1.20), // Lowered thresholds for more aggressive surge pricing
+                new HighDemandSurgeRule(0.75, 1.15), // Additional surge for high demand scenarios
                 new EarlyBirdDiscountRule(60, 0.10),
                 new LastMinuteDealRule(3, 0.50, 0.20),
                 new LoyaltyDiscountRule(Map.of(
                         UserSegment.SILVER, 0.03,
                         UserSegment.GOLD, 0.07,
                         UserSegment.PLATINUM, 0.12,
-                        UserSegment.CORPORATE, 0.08
+                        UserSegment.CORPORATE, 0.08,
+                        UserSegment.LOYAL, 0.05 // Added LOYAL segment with 5% discount
                 ))
         );
         this.ruleEngine = new RuleEngine(rules);
@@ -553,6 +588,10 @@ public class DynamicPricingService {
                 // Forecast demand
                 DemandContext dctx = new DemandContext(hotelId, roomType, checkIn, bookingWindowDays, occupancy, competitor);
                 double demandIndex = forecaster.forecast(dctx);
+
+                // Debug logging
+                LOG.info(String.format("Pricing request - hotelId: %s, roomType: %s, segment: %s, occupancy: %.2f, demandIndex: %.2f, bookingWindowDays: %d", 
+                    hotelId, roomType, segment, occupancy, demandIndex, bookingWindowDays));
 
                 // Compose context
                 PricingContext pctx = new PricingContext(
@@ -859,6 +898,23 @@ public class DynamicPricingService {
             PriceComputation res = svc.ruleEngine.execute(ctx, svc.forecaster);
             boolean loyaltyApplied = res.appliedRules.stream().anyMatch(r -> r.name.equals("LoyaltyDiscount"));
             assert loyaltyApplied : "LoyaltyDiscount should apply for PLATINUM";
+        }
+
+        // Test 6: LOYAL segment discount
+        {
+            LocalDate checkIn = LocalDate.now().plusDays(30);
+            svc.feeds.occupancy.put("H1", 0.5);
+            DemandContext dctx = new DemandContext("H1", "DLX", checkIn, 30, 0.5, null);
+            double demandIndex = svc.forecaster.forecast(dctx);
+
+            PricingContext ctx = new PricingContext("H1", "DLX", checkIn, 1, UserSegment.LOYAL,
+                    5000, 0.5, null,
+                    svc.feeds.getSeasonMultiplier("H1", checkIn.getMonth()),
+                    30, demandIndex);
+
+            PriceComputation res = svc.ruleEngine.execute(ctx, svc.forecaster);
+            boolean loyaltyApplied = res.appliedRules.stream().anyMatch(r -> r.name.equals("LoyaltyDiscount"));
+            assert loyaltyApplied : "LoyaltyDiscount should apply for LOYAL";
         }
 
         LOG.info("All tests passed!");
